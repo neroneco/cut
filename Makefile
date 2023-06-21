@@ -43,7 +43,7 @@ $(DBG_PATH)/%.o: $(SRC_PATH)/%.c
 	$(CC) $(FLAGS) -c -g $< -o $@
 
 $(TARGET_DEBUG): $(OBJ_DEBUG)
-	$(CC) $(FLAGS) -g $< -o $@
+	$(CC) $(FLAGS) $(OBJ_DEBUG) -g -o $@
 
 # phony rules
 .PHONY: dir
