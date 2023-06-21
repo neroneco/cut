@@ -27,10 +27,10 @@ TARGET_DEBUG := $(DBG_PATH)/$(TARGET_NAME)
 SRC := $(wildcard $(SRC_PATH)/*.c)
 OBJ := $(addprefix $(OBJ_PATH)/, $(addsuffix .o, $(notdir $(basename $(SRC)))))
 OBJ_DEBUG := $(addprefix $(DBG_PATH)/, $(addsuffix .o, $(notdir $(basename $(SRC)))))
-
+OBJ_TEST := $(filter-out debug/cut.o, $(OBJ_DEBUG))
 
 # default rule
-default: dir all
+default: dir all debug
 
 # non-phony targets
 $(TARGET): $(OBJ)
@@ -54,7 +54,7 @@ dir:
 all: $(TARGET)
 
 .PHONY: debug
-debug: $(TARGET_DEBUG)
+debug: dir $(TARGET_DEBUG)
 
 # tests rules
 TESTS_PATH := tests
@@ -63,7 +63,7 @@ SRC_TESTS := $(wildcard $(TESTS_PATH)/*.c)
 TARGETS_TESTS := $(addprefix $(TESTS_PATH)/bin/, $(notdir $(basename $(SRC_TESTS))))
 
 $(TESTS_PATH)/bin/%: $(TESTS_PATH)/%.c
-	$(CC) $(FLAGS) $< -o $@
+	$(CC) $(FLAGS) $(OBJ_TEST) -g $< -o $@
 
 .PHONY: test
 test: $(TESTS_PATH)/bin $(TARGETS_TESTS)
