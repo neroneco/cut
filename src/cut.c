@@ -30,24 +30,25 @@ static pthread_cond_t cond_var[2] = {PTHREAD_COND_INITIALIZER, PTHREAD_COND_INIT
 
 static int var[2];
 
+static int end;
+
 // watchdog
 int main() {
 
     size_t status[3];
 
-    struct sigaction sa;
+    struct sigaction sa = {0};
     sa.sa_handler = handler;
     sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
 
     pthread_create(&thr[READER], NULL, reader, &status[READER]);
     pthread_create(&thr[ANALYZER], NULL, analyzer, &status[ANALYZER]);
     pthread_create(&thr[PRINTER], NULL, printer, &status[PRINTER]);
 
     // TODO watchdog code
-
-    pthread_join(thr[READER], NULL);
-    pthread_join(thr[ANALYZER], NULL);
-    pthread_join(thr[PRINTER], NULL);
+    while (!end)
+        usleep(1000000u);
 
     return 0;
 }
@@ -57,7 +58,7 @@ void* reader(void* arg) {
     size_t* status = (size_t*)arg;
 
     // FIXME change to infinite loop
-    for (size_t i = 0; i < 20; i++) {
+    for (size_t i = 0;; i++) {
         status[READER] = 1;
         pthread_mutex_lock(&mtx[READER]);
 
@@ -83,7 +84,7 @@ static void* analyzer(void* arg) {
     size_t* status = (size_t*)arg;
 
     // FIXME change to infinite loop
-    for(size_t i = 0; i < 20; i++) {
+    for(size_t i = 0;; i++) {
         status[ANALYZER] = 1;
         pthread_mutex_lock(&mtx[READER]);
         gettimeofday(&tv, NULL);
@@ -123,7 +124,7 @@ static void* printer(void* arg) {
     size_t* status = (size_t*)arg;
 
     // FIXME change to infinite loop
-    for(size_t i = 0; i < 20; i++) {
+    for(size_t i = 0;; i++) {
         status[PRINTER] = 1;
         pthread_mutex_lock(&mtx[ANALYZER]);
         gettimeofday(&tv, NULL);
@@ -145,6 +146,12 @@ static void* printer(void* arg) {
 
 static void handler(int sig) {
     sig++;
-    write(1, "SIGTERM", 7);
+    pthread_cancel(thr[READER]);
+    pthread_cancel(thr[ANALYZER]);
+    pthread_cancel(thr[PRINTER]);
+    pthread_join(thr[READER], NULL);
+    pthread_join(thr[ANALYZER], NULL);
+    pthread_join(thr[PRINTER], NULL);
+    end = 1;
     // TODO cancle all thread, close file descriptor, free memory
 }
