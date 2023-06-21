@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <sys/time.h>
 #include <features.h>
+#include <termios.h>
 #include <time.h>
 #include <signal.h>
 #include <errno.h>
@@ -21,7 +22,9 @@ static void handler(int num);
 enum THREAD {
     READER = 0,
     ANALYZER = 1,
-    PRINTER = 2
+    PRINTER = 2,
+    WATCHDOG = 3,
+    LOGGER = 4
 };
 
 static pthread_t thr[3];
@@ -30,15 +33,25 @@ static pthread_cond_t cond_var[2] = {PTHREAD_COND_INITIALIZER, PTHREAD_COND_INIT
 
 static int var[2];
 
-static int end;
+static int end[4];
 
 // watchdog
 int main() {
+
+    int c = 0;
+    struct termios old_settings = {0};
+    struct termios new_settings = {0};
 
     size_t status[3];
 
     struct sigaction sa = {0};
     sa.sa_handler = handler;
+
+    tcgetattr(STDIN_FILENO, &old_settings);
+    memcpy(&new_settings, &old_settings, sizeof(struct termios));
+    new_settings.c_lflag -= ICANON;
+    tcsetattr(STDIN_FILENO, TCSANOW, &new_settings);
+
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
 
@@ -47,8 +60,21 @@ int main() {
     pthread_create(&thr[PRINTER], NULL, printer, &status[PRINTER]);
 
     // TODO watchdog code
-    while (!end)
-        usleep(1000000u);
+    while (!end[WATCHDOG] && !(c == 'q')) {
+        c = getc(stdin);
+        usleep(100000u);
+    }
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &old_settings);
+    if (c == 'q')
+        printf("\nEnding program (user quit)\n");
+
+    end[READER] = 1;
+    end[ANALYZER] = 1;
+    end[PRINTER] = 1;
+    pthread_join(thr[READER], NULL);
+    pthread_join(thr[ANALYZER], NULL);
+    pthread_join(thr[PRINTER], NULL);
 
     return 0;
 }
@@ -58,7 +84,7 @@ void* reader(void* arg) {
     size_t* status = (size_t*)arg;
 
     // FIXME change to infinite loop
-    for (size_t i = 0;; i++) {
+    for (size_t i = 0; !end[READER]; i++) {
         status[READER] = 1;
         pthread_mutex_lock(&mtx[READER]);
 
@@ -84,7 +110,7 @@ static void* analyzer(void* arg) {
     size_t* status = (size_t*)arg;
 
     // FIXME change to infinite loop
-    for(size_t i = 0;; i++) {
+    for(size_t i = 0; !end[ANALYZER]; i++) {
         status[ANALYZER] = 1;
         pthread_mutex_lock(&mtx[READER]);
         gettimeofday(&tv, NULL);
@@ -124,7 +150,7 @@ static void* printer(void* arg) {
     size_t* status = (size_t*)arg;
 
     // FIXME change to infinite loop
-    for(size_t i = 0;; i++) {
+    for(size_t i = 0; !end[PRINTER]; i++) {
         status[PRINTER] = 1;
         pthread_mutex_lock(&mtx[ANALYZER]);
         gettimeofday(&tv, NULL);
@@ -146,12 +172,13 @@ static void* printer(void* arg) {
 
 static void handler(int sig) {
     sig++;
+    write(1, "\nEnding program (interrupted)\n", 31);
     pthread_cancel(thr[READER]);
     pthread_cancel(thr[ANALYZER]);
     pthread_cancel(thr[PRINTER]);
     pthread_join(thr[READER], NULL);
     pthread_join(thr[ANALYZER], NULL);
     pthread_join(thr[PRINTER], NULL);
-    end = 1;
+    end[WATCHDOG] = 1;
     // TODO cancle all thread, close file descriptor, free memory
 }
