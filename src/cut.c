@@ -47,14 +47,17 @@ int main() {
     struct sigaction sa = {0};
     sa.sa_handler = handler;
 
+    // changing terminal mode (input available immediately)
     tcgetattr(STDIN_FILENO, &old_settings);
     memcpy(&new_settings, &old_settings, sizeof(struct termios));
     new_settings.c_lflag -= ICANON;
     tcsetattr(STDIN_FILENO, TCSANOW, &new_settings);
 
+    // seting signals handler
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
 
+    // creating threads
     pthread_create(&thr[READER], NULL, reader, &status[READER]);
     pthread_create(&thr[ANALYZER], NULL, analyzer, &status[ANALYZER]);
     pthread_create(&thr[PRINTER], NULL, printer, &status[PRINTER]);
@@ -65,10 +68,12 @@ int main() {
         usleep(100000u);
     }
 
+    // changing terminal mode back
     tcsetattr(STDIN_FILENO, TCSANOW, &old_settings);
     if (c == 'q')
         printf("\nEnding program (user quit)\n");
 
+    // Ending program (normally)
     end[READER] = 1;
     end[ANALYZER] = 1;
     end[PRINTER] = 1;
@@ -171,8 +176,13 @@ static void* printer(void* arg) {
 }
 
 static void handler(int sig) {
-    sig++;
-    write(1, "\nEnding program (interrupted)\n", 31);
+
+    if (sig == SIGINT)
+        write(1, "\nEnding program (interrupted SIGINT)\n", 38);
+    if (sig == SIGTERM)
+        write(1, "\nEnding program (interrupted SIGTERM)\n", 39);
+
+    // Ending program (via inetterupt)
     pthread_cancel(thr[READER]);
     pthread_cancel(thr[ANALYZER]);
     pthread_cancel(thr[PRINTER]);
