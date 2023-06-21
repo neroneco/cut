@@ -31,8 +31,6 @@ static pthread_t thr[3];
 static pthread_mutex_t mtx[2] = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER};
 static pthread_cond_t cond_var[2] = {PTHREAD_COND_INITIALIZER, PTHREAD_COND_INITIALIZER};
 
-static int var[2];
-
 static int end[4];
 
 // watchdog
@@ -42,6 +40,10 @@ int main() {
     struct termios old_settings = {0};
     struct termios new_settings = {0};
 
+    // status of thread:
+    //    1) thread set status to 1
+    //    2) watchdog resetes status to 0 with 2 sec intervals
+    //    3) if status 0 after 2 sec - thread hanged
     size_t status[3];
 
     struct sigaction sa = {0};
@@ -84,99 +86,97 @@ int main() {
     return 0;
 }
 
+
+
 void* reader(void* arg) {
-    int tmp;
     size_t* status = (size_t*)arg;
 
-    // FIXME change to infinite loop
-    for (size_t i = 0; !end[READER]; i++) {
+    while (!end[READER]) {
         status[READER] = 1;
         pthread_mutex_lock(&mtx[READER]);
 
         // TODO reader code
-        var[0]++;
-        tmp = var[0];
+        // enqueue data for analyzer
 
         pthread_cond_signal(&cond_var[READER]);
         pthread_mutex_unlock(&mtx[READER]);
 
         // FIXME only for testing
-        printf("%zu reader var[0]: %i\n", i, tmp);
         usleep(3000000);
     }
     return 0;
 }
 
+
+
 static void* analyzer(void* arg) {
-    int tmp;
     struct timespec ts;
     struct timeval  tv;
 
     size_t* status = (size_t*)arg;
 
-    // FIXME change to infinite loop
-    for(size_t i = 0; !end[ANALYZER]; i++) {
+    while (!end[ANALYZER]) {
         status[ANALYZER] = 1;
         pthread_mutex_lock(&mtx[READER]);
+
+        // Wait for signal but with 1 sec timeout (just in case if reader hanged or ended)
         gettimeofday(&tv, NULL);
         ts.tv_sec = tv.tv_sec + 1l;
         ts.tv_nsec = (tv.tv_usec * 1000l);
         pthread_cond_timedwait(&cond_var[READER], &mtx[READER], &ts);
 
         // TODO reader-analyzer code
-        var[0]++;
-        tmp = var[0];
+        // analyze data
 
         pthread_mutex_unlock(&mtx[READER]);
-        printf("%zu analyzer var[0]: %i\n", i, tmp);
+
         usleep(10000);
 
         pthread_mutex_lock(&mtx[ANALYZER]);
 
         // TODO analyzer-printer code
-        var[1]++;
-        tmp = var[1];
+        // enqueue data for printer
 
         pthread_cond_signal(&cond_var[ANALYZER]);
         pthread_mutex_unlock(&mtx[ANALYZER]);
 
         // FIXME only for testing
-        printf("%zu analyzer var[1]: %i\n", i, tmp);
         usleep(5000);
     }
     return 0;
 }
 
+
+
 static void* printer(void* arg) {
-    int tmp;
     struct timespec ts;
     struct timeval  tv;
 
     size_t* status = (size_t*)arg;
 
-    // FIXME change to infinite loop
-    for(size_t i = 0; !end[PRINTER]; i++) {
+    while (!end[PRINTER]) {
         status[PRINTER] = 1;
         pthread_mutex_lock(&mtx[ANALYZER]);
+
+        // Wait for signal but with 1 sec timeout (just in case if reader hanged or ended)
         gettimeofday(&tv, NULL);
         ts.tv_sec = tv.tv_sec + 1l;
         ts.tv_nsec = (tv.tv_usec * 1000l);
         pthread_cond_timedwait(&cond_var[ANALYZER], &mtx[ANALYZER], &ts);
 
         // TODO printer code
-        var[1]++;
-        tmp = var[1];
+        // print data to stdin
 
         pthread_mutex_unlock(&mtx[ANALYZER]);
 
         // FIXME only for testing
-        printf("%zu printer var[1]: %i\n", i, tmp);
     }
     return 0;
 }
 
-static void handler(int sig) {
 
+
+static void handler(int sig) {
     if (sig == SIGINT)
         write(1, "\nEnding program (interrupted SIGINT)\n", 38);
     if (sig == SIGTERM)
