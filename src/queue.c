@@ -29,12 +29,12 @@ int enqueue(struct queue* q, void* data, size_t data_size) {
     new_node->data_size = data_size;
 
     // add to queue
-    if (q->tail != NULL)
+    if (q->size != 0)
         q->tail->next = new_node;
 
     q->tail = new_node;
 
-    if (q->head == NULL)
+    if (q->size == 0)
         q->head = new_node;
     
     q->size++;
