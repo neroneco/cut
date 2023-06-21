@@ -1,6 +1,6 @@
 # determine compiler
 ifeq ($(CC),clang)
-  FLAGS += -Weverything
+  FLAGS += -Weverything -Wno-reserved-macro-identifier -Wno-disabled-macro-expansion
 else ifeq ($(CC),gcc)
   FLAGS += -Wall -Wextra
 else
