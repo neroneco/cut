@@ -2,3 +2,4 @@ bin/
 debug/
 obj/
 .vscode/
+log.txt

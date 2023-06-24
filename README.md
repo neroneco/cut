@@ -16,13 +16,13 @@ Simple console application to truck cpu usage.
 
 ---
 
-## Files
+## Files:
 
 * `src/cut.c`  -> cut main aplication
 
 ---
 
-## Instalation
+## Instalation:
 * Software requirements:
     - `gcc` or `clang` compiler
     - `make` build system
@@ -31,3 +31,8 @@ Simple console application to truck cpu usage.
   - `make` - compile all files
   - `make dbg` - compile with debug symbols
   - `make test` - compile and run tests
+
+## Notes:
+* clang warnings turned off list:
+  - `-Wno-reserved-macro-identifier` - 
+  - `-Wno-disabled-macro-expansion` - 
