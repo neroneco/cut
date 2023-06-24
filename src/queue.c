@@ -17,6 +17,8 @@ int enqueue(struct queue* q, void* data, size_t data_size) {
         return 1;
     if (data_size > q->max_elem_size)
         return 1;
+    if (data_size <= 0)
+        return 1;
 
     // allocate memory
     new_node = malloc(data_size + sizeof(struct node));
