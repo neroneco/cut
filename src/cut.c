@@ -260,8 +260,7 @@ static void* analyzer(void* arg) {
         } else {
             continue;
         }
-        // FIXME only for testing
-        //usleep(1000000);
+
         // get number of cpus (cpus num is always too big by one)
         cpus_num = get_cpu_count(data_buffer_raw, (ssize_t)data_size);
         if (cpus_num < 2) {
@@ -356,16 +355,14 @@ static void* printer(void* arg) {
         for (size_t i = 0; i < cpus_num; i++) {
             if (!i) {
                 if (!first_time)
-                    printf("\033[%zuA", cpus_num);
+                    printf("\033[%zuA", cpus_num + 1);
                 printf("\033[0K\tcpu overal usage: \033[1m%3.2f %%\033[22m\n", cpu_usage[i]);
             } else {
                 printf("\033[0K\tcpu%2zu: \033[1m%3.2f %%\033[22m\n", i, cpu_usage[i]);
             }
         }
+        printf("Press 'q' to exit\n");
         first_time = 0;
-
-        // FIXME only for testing
-        usleep(1000);
     }
 }
 
