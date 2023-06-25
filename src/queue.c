@@ -43,7 +43,7 @@ int enqueue(struct queue* q, void* data, size_t data_size) {
     return 0;
 }
 
-int dequeue(struct queue* q, void* data) {
+int dequeue(struct queue* q, void* data, size_t* data_size) {
 
     struct node* old_head;
 
@@ -52,6 +52,7 @@ int dequeue(struct queue* q, void* data) {
         return 1;
     if (q->head == NULL)
         return 1;
+    *data_size = q->head->data_size;
 
     // copy data to given pointer
     if (data != NULL)
@@ -67,7 +68,8 @@ int dequeue(struct queue* q, void* data) {
 }
 
 void deinit_queue(struct queue* q) {
+    size_t data_size;
     while (q->size > 0) {
-        dequeue(q, NULL);
+        dequeue(q, NULL, &data_size);
     }
 }

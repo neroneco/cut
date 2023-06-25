@@ -22,7 +22,7 @@ void init_queue(struct queue* q, size_t max_queue_size, size_t max_elem_size);
 
 int enqueue(struct queue* q, void* data, size_t data_size);
 
-int dequeue(struct queue* q, void* data);
+int dequeue(struct queue* q, void* data, size_t* data_size);
 
 void deinit_queue(struct queue* q);
 

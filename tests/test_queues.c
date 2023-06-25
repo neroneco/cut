@@ -23,6 +23,7 @@ int main() {
     struct queue q;
     char* deq_data;
     size_t len;
+    size_t data_size;
 
     printf("\nTEST Queues STARTED\n");
 
@@ -50,7 +51,7 @@ int main() {
         // checkt size of queue
         assert(q.size == MAX_QUEUE_SIZE - i );
         // dequeue data
-        assert(dequeue(&q, deq_data) == 0);
+        assert(dequeue(&q, deq_data, &data_size) == 0);
         // check if dequeued data is the same
         assert(strncmp(data[i], deq_data, len) == 0);
         // check size of dequeued data
@@ -59,7 +60,7 @@ int main() {
     }
     // try to dequeue from empty queue
     deq_data = calloc(100,1);
-    assert(dequeue(&q, deq_data) == 1);
+    assert(dequeue(&q, deq_data, &data_size) == 1);
     assert(q.size == 0);
     free(deq_data);
 
