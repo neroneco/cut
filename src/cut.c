@@ -132,7 +132,8 @@ int main() {
     tcsetattr(STDIN_FILENO, TCSANOW, &old_settings);
 
     // Ending program
-    exit_handler(0);
+    if (!end_program)
+        exit_handler(0);
 
     log_direct_message(log_stream, "[WATCHDOG] - END - closing files and freeing memory");
 
@@ -153,7 +154,8 @@ int main() {
 void* reader(void* arg) {
     size_t* status = (size_t*)arg;
 
-    int rs;
+    int rs = 1;
+    int rs_mtx = 1;
     ssize_t data_size;
     char data_buffer[4096] = {0};
 
@@ -162,7 +164,7 @@ void* reader(void* arg) {
     for(;;) {
         *status = 1;
         delay++;
-        delay %= 5;
+        delay %= 10;
         if (delay) {
             // FIXME only for testing
             usleep(100000);
@@ -181,14 +183,21 @@ void* reader(void* arg) {
             pthread_exit(status);
         }
 
-        pthread_mutex_lock(&mtx_reader);
-
+        rs_mtx = pthread_mutex_lock(&mtx_reader);
+        if (rs_mtx) {
+            log_message(&log_queue, "[READER] - Could not unlock: READERS mtx");
+            *status = 0;
+            pthread_exit(status);
+        }
         // enqueue data for analyzer
         rs = enqueue(&q_reader, data_buffer, (size_t)data_size);
-
         pthread_cond_signal(&cond_var_reader);
-        pthread_mutex_unlock(&mtx_reader);
-
+        rs_mtx = pthread_mutex_unlock(&mtx_reader);
+        if (rs_mtx) {
+            log_message(&log_queue, "[READER] - Could not unlock: READERS mtx");
+            *status = 0;
+            pthread_exit(status);
+        }
 
         if (!rs)
             log_message(&log_queue, "[READER] - Read %zu bytes and added to Queue (queue[READER].size = %zu)", data_size, q_reader.size);
@@ -209,7 +218,8 @@ static void* analyzer(void* arg) {
     long timeout = 500l; // thread condition timeout in miliseconds
 
     int rs = 1;
-    ssize_t data_size = 0;
+    int rs_mtx = 1;
+    size_t data_size = 0;
     char data_buffer_raw[4096] = {0};
 
     // I assume that there will not be more then 30 cores
@@ -223,7 +233,12 @@ static void* analyzer(void* arg) {
     for(;;) {
         *status = 1;
 
-        pthread_mutex_lock(&mtx_reader);
+        rs_mtx = pthread_mutex_lock(&mtx_reader);
+        if (rs_mtx) {
+            log_message(&log_queue, "[ANALYZER] - Could not acquire lock: READERS mtx");
+            *status = 0;
+            pthread_exit(status);
+        }
         // Wait for signal but with 1 sec timeout (just in case if reader hanged or ended)
         gettimeofday(&tv, NULL);
         ts.tv_nsec = (tv.tv_usec * 1000l) + timeout * 1000000; // 500 [ms]
@@ -231,13 +246,13 @@ static void* analyzer(void* arg) {
         ts.tv_nsec %= 1000000000l;
         pthread_cond_timedwait(&cond_var_reader, &mtx_reader, &ts);
         // dequeue data from reader
-        if (q_reader.size > 0) {
-            data_size = (ssize_t)q_reader.head->data_size;
-            rs = dequeue(&q_reader, data_buffer_raw);
-        } else {
-            rs = 1;
+        rs = dequeue(&q_reader, data_buffer_raw, &data_size);
+        rs_mtx = pthread_mutex_unlock(&mtx_reader);
+        if (rs_mtx) {
+            log_message(&log_queue, "[ANALYZER] - Could not unlock: READERS mtx");
+            *status = 0;
+            pthread_exit(status);
         }
-        pthread_mutex_unlock(&mtx_reader);
 
         // analyze data
         if (!rs) {
@@ -246,15 +261,17 @@ static void* analyzer(void* arg) {
             continue;
         }
         // FIXME only for testing
-        usleep(1000000);
+        //usleep(1000000);
         // get number of cpus (cpus num is always too big by one)
-        cpus_num = get_cpu_count(data_buffer_raw, data_size);
-        if (cpus_num < 2)
+        cpus_num = get_cpu_count(data_buffer_raw, (ssize_t)data_size);
+        if (cpus_num < 2) {
+            log_message(&log_queue, "[ANALYZER] - Cpus number = %zu;less than 2", cpus_num);
+            *status = 0;
             pthread_exit(status);
-
+        }
         // get new cpu idle/total time data and compare it with previous one 
         // after that determine cpu_usage
-        analyze(cpu_new_time, cpus_num ,data_buffer_raw, data_size);
+        analyze(cpu_new_time, cpus_num ,data_buffer_raw, (ssize_t)data_size);
         for (size_t i = 0; i < cpus_num; i++) {
             idle = (double)(cpu_new_time[i].idle - cpu_old_time[i].idle);
             total = (double)(cpu_new_time[i].total - cpu_old_time[i].total);
@@ -263,11 +280,21 @@ static void* analyzer(void* arg) {
         memcpy(cpu_old_time, cpu_new_time, sizeof(struct cpu_time) * cpus_num);
         log_message(&log_queue, "[ANALYZER] - Data analyzed, defined cpu cores: %zu", cpus_num);
 
-        pthread_mutex_lock(&mtx_printer);
+        rs_mtx = pthread_mutex_lock(&mtx_printer);
+        if (rs_mtx) {
+            log_message(&log_queue, "[ANALYZER] - Could not acquire lock: PRINTERS mtx");
+            *status = 0;
+            pthread_exit(status);
+        }
         // enqueue data for printer
         rs = enqueue(&q_printer, cpu_usage, (size_t)(cpus_num * sizeof(double)));
         pthread_cond_signal(&cond_var_printer);
-        pthread_mutex_unlock(&mtx_printer);
+        rs_mtx = pthread_mutex_unlock(&mtx_printer);
+        if (rs_mtx) {
+            log_message(&log_queue, "[ANALYZER] - Could not unlock: PRINTERS mtx");
+            *status = 0;
+            pthread_exit(status);
+        }
 
         if (!rs)
             log_message(&log_queue, "[ANALYZER] - Added data to Printers Queue (queue[ANALYZER].size = %zu)", q_printer.size);
@@ -286,14 +313,23 @@ static void* printer(void* arg) {
     long timeout = 500l; // thread condition timeout in miliseconds
 
     int rs = 1;
-    ssize_t data_size = 0;
+    int rs_mtx = 1;
+    size_t data_size = 0;
     size_t cpus_num = 0;
     double cpu_usage[30] = {0};
+
+    int first_time = 1;
 
     for(;;) {
         *status = 1;
 
-        pthread_mutex_lock(&mtx_printer);
+        rs_mtx = pthread_mutex_lock(&mtx_printer);
+        if (rs_mtx) {
+            log_message(&log_queue, "[PRINTER] - Could not acquire lock: PRINTERS mtx");
+            *status = 0;
+            pthread_exit(status);
+        }
+        
         // Wait for signal but with 500 ms timeout (just in case if reader hanged or ended)
         gettimeofday(&tv, NULL);
         ts.tv_nsec = (tv.tv_usec * 1000l) + timeout * 1000000; // 500 [ms]
@@ -301,11 +337,13 @@ static void* printer(void* arg) {
         ts.tv_nsec %= 1000000000l;
         pthread_cond_timedwait(&cond_var_printer, &mtx_printer, &ts);
         // dequeue data from analyzer
-        if (q_printer.size > 0) {
-            data_size = (ssize_t)q_printer.head->data_size;
-            rs = dequeue(&q_printer, cpu_usage);
+        rs = dequeue(&q_printer, cpu_usage, &data_size);
+        rs_mtx = pthread_mutex_unlock(&mtx_printer);
+        if (rs_mtx) {
+            log_message(&log_queue, "[PRINTER] - Could not unlock: PRINTERS mtx");
+            *status = 0;
+            pthread_exit(status);
         }
-        pthread_mutex_unlock(&mtx_printer);
 
         if (!rs) {
             log_message(&log_queue, "[PRINTER] - Dequeued %zu bytes from printers Queue", data_size);
@@ -314,14 +352,18 @@ static void* printer(void* arg) {
         }
 
         // print data to stdin
-        // TODO use esc char to make output more visible
         cpus_num = ((size_t)data_size / sizeof(double));
         for (size_t i = 0; i < cpus_num; i++) {
-            if (!i)
-                printf("\tcpu overal usage: %.3f%%\n", cpu_usage[i]);
-            else
-                printf("\tcpu%zu: %.3f%%\n", i, cpu_usage[i]);
+            if (!i) {
+                if (!first_time)
+                    printf("\033[%zuA", cpus_num);
+                printf("\033[0K\tcpu overal usage: \033[1m%3.2f %%\033[22m\n", cpu_usage[i]);
+            } else {
+                printf("\033[0K\tcpu%2zu: \033[1m%3.2f %%\033[22m\n", i, cpu_usage[i]);
+            }
         }
+        first_time = 0;
+
         // FIXME only for testing
         usleep(1000);
     }
@@ -334,18 +376,28 @@ static void* printer(void* arg) {
 static void* logger(void* arg) {
     size_t* status = (size_t*)arg;
 
+    int rs_mtx = 1;
+
     char message[300] = {0};
+    size_t data_size;
 
     for(;;) {
         *status = 1;
 
-        pthread_mutex_lock(&mtx_logger);
+        rs_mtx = pthread_mutex_lock(&mtx_logger);
+        if (rs_mtx) {
+            *status = 0;
+            pthread_exit(status);
+        }
         while (q_logger.size > 0) {
-            dequeue(&q_logger, message);
+            dequeue(&q_logger, message, &data_size);
             fprintf(log_stream, "%s", message);
         }
-        pthread_mutex_unlock(&mtx_logger);
-
+        rs_mtx = pthread_mutex_unlock(&mtx_logger);
+        if (rs_mtx) {
+            *status = 0;
+            pthread_exit(status);
+        }
         usleep(1000000);
     }
 }
@@ -355,15 +407,8 @@ static void* logger(void* arg) {
 
 
 static void exit_handler(int sig) {
-    if (sig == SIGINT) {
-        write(1, "\nEnding program (Interrupted SIGINT)\n", 38);
-    } else if (sig == SIGTERM) {
-        write(1, "\nEnding program (Interrupted SIGTERM)\n", 39);
-    } else if (sig == 0) {
-        write(1, "\nEnding program (User end)\n", 28);
-    }
 
-    // Ending program (via inetterupt)
+    // Ending threads
     pthread_cancel(thr_reader);
     pthread_cancel(thr_analyzer);
     pthread_cancel(thr_printer);
@@ -372,5 +417,14 @@ static void exit_handler(int sig) {
     pthread_join(thr_analyzer, NULL);
     pthread_join(thr_printer, NULL);
     pthread_join(thr_logger, NULL);
+
+    if (sig == SIGINT) {
+        write(1, "\nEnding program (Interrupted SIGINT)\n", 38);
+    } else if (sig == SIGTERM) {
+        write(1, "\nEnding program (Interrupted SIGTERM)\n", 39);
+    } else if (sig == 0) {
+        write(1, "\nEnding program (User end)\n", 28);
+    }
+
     end_program = 1;
 }
