@@ -39,5 +39,5 @@ void log_direct_message(FILE* stream, const char* str, ...) {
     time(&t);
     tmp = localtime(&t);
     strftime(str_time, sizeof(str_time), "%d/%m/%Y %H:%M:%S %Z", tmp);
-    fprintf(stream, "%s\t%s\n ", str_time, str_msg);
+    fprintf(stream, "%s\t%s\n", str_time, str_msg);
 }

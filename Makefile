@@ -1,6 +1,6 @@
 # determine compiler
 ifeq ($(CC),clang)
-  FLAGS += -Weverything -Wno-reserved-macro-identifier -Wno-disabled-macro-expansion
+  FLAGS += -Weverything -Wno-reserved-macro-identifier -Wno-disabled-macro-expansion -Wno-format-nonliteral
 else ifeq ($(CC),gcc)
   FLAGS += -Wall -Wextra
 else
@@ -66,7 +66,7 @@ $(TESTS_PATH)/bin/%: $(TESTS_PATH)/%.c
 	$(CC) $(FLAGS) $(OBJ_TEST) -g $< -o $@
 
 .PHONY: test
-test: $(TESTS_PATH)/bin $(TARGETS_TESTS)
+test: default $(TESTS_PATH)/bin $(TARGETS_TESTS)
 	@for test in $(TARGETS_TESTS) ; do ./$$test ; done
 
 $(TESTS_PATH)/bin:

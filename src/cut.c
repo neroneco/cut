@@ -26,34 +26,30 @@ static void* logger(void* arg);
 
 static void exit_handler(int num);
 
-#define THREAD_POOL 10
 
-// FIXME This numbers are wrong
-enum THREAD {
-    READER = 0,
-    ANALYZER = 1,
-    LOGGER = 2,
-    PRINTER = 3,
-    WATCHDOG = 4,
-};
+static pthread_t thr_reader;
+static pthread_t thr_analyzer;
+static pthread_t thr_printer;
+static pthread_t thr_logger;
 
-static pthread_t thr[THREAD_POOL];
-static pthread_mutex_t mtx[3] = {PTHREAD_MUTEX_INITIALIZER,
-                                 PTHREAD_MUTEX_INITIALIZER,
-                                 PTHREAD_MUTEX_INITIALIZER};
-static pthread_cond_t cond_var[3] = {PTHREAD_COND_INITIALIZER,
-                                     PTHREAD_COND_INITIALIZER,
-                                     PTHREAD_COND_INITIALIZER};
+static pthread_mutex_t mtx_reader = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t mtx_printer = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t mtx_logger = PTHREAD_MUTEX_INITIALIZER;
 
-static int end[THREAD_POOL];
+static pthread_cond_t cond_var_reader = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t cond_var_printer = PTHREAD_COND_INITIALIZER;
 
-static struct queue q[3];
+static struct queue q_reader;
+static struct queue q_printer;
+static struct queue q_logger;
+
+static int end_program;
 
 static int fd;
 static FILE* log_stream;
 
-static struct logger_t log_queue = {.q = &q[LOGGER],
-                                    .mtx = &mtx[LOGGER]};
+static struct logger_t log_queue = {.q = &q_logger,
+                                    .mtx = &mtx_logger};
 
 // watchdog
 int main() {
@@ -66,15 +62,18 @@ int main() {
     //    1) thread set status to 1
     //    2) watchdog resetes status to 0 with 2 sec intervals
     //    3) if status 0 after 2 sec - thread hanged
-    size_t status[THREAD_POOL] = {0};
+    size_t status_reader = 0;
+    size_t status_analyzer = 0;
+    size_t status_printer = 0;
+    size_t status_logger = 0;
 
     struct sigaction sa = {0};
     sa.sa_handler = exit_handler;
 
     // queue init
-    init_queue(&q[READER], 100, 3000);
-    init_queue(&q[ANALYZER], 100, 3000);
-    init_queue(&q[LOGGER], 100, 3000);
+    init_queue(&q_reader, 100, 3000);
+    init_queue(&q_printer, 100, 3000);
+    init_queue(&q_logger, 100, 3000);
 
     // changing terminal mode (input available immediately)
     tcgetattr(STDIN_FILENO, &old_settings);
@@ -85,49 +84,48 @@ int main() {
 
     // creating log file stream
     log_stream = fopen("log.txt", "a");
+    log_direct_message(log_stream, "[WATCHDOG] - Starting program");
 
     // creating threads
-    pthread_create(&thr[READER], NULL, reader, status);
-    pthread_create(&thr[ANALYZER], NULL, analyzer, status);
-    pthread_create(&thr[PRINTER], NULL, printer, status);
-    pthread_create(&thr[LOGGER], NULL, logger, status);
+    pthread_create(&thr_reader, NULL, reader, &status_reader);
+    pthread_create(&thr_analyzer, NULL, analyzer, &status_analyzer);
+    pthread_create(&thr_printer, NULL, printer, &status_printer);
+    pthread_create(&thr_logger, NULL, logger, &status_logger);
 
     // seting signals handler
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
 
     // watchdog code; cyclic 2 sec check
-    for (size_t i = 1; !end[WATCHDOG] && !(c == 'q'); i++) {
+    for (size_t i = 1; !end_program && !(c == 'q'); i++) {
         c = getc(stdin);
-        usleep(100000u);
+        usleep(100000);
         i %= 20;
         if (!i) {
-            if (!status[READER]) {
+            if (!status_reader) {
                 log_direct_message(log_stream, "[WATCHDOG] - Reader hanging. Ending...");
-                end[WATCHDOG] = 1;
                 break;
             }
-            if (!status[ANALYZER]) {
+            if (!status_analyzer) {
                 log_direct_message(log_stream, "[WATCHDOG] - Analyzer hanging. Ending...");
-                end[WATCHDOG] = 1;
                 break;
             }
-            if (!status[PRINTER]) {
+            if (!status_printer) {
                 log_direct_message(log_stream, "[WATCHDOG] - Printer hanging. Ending...");
-                end[WATCHDOG] = 1;
                 break;
             }
-            // TODO add write to log file if logger hangs
-            if (!status[LOGGER]) {
+            if (!status_logger) {
                 log_direct_message(log_stream, "[WATCHDOG] - Logger hanging. Ending...");
-                end[WATCHDOG] = 1;
                 break;
             }
-            log_message(&log_queue, "[WATCHDOG] - CHECK all thread OK");
-            status[READER] = 0;
-            status[ANALYZER] = 0;
-            status[PRINTER] = 0;
-            status[LOGGER] = 0;
+            log_message(&log_queue, "[WATCHDOG] - CHECK all thread OK - "
+                                    "queues: q[reader] = %zu/%zu | q[analyzer] = %zu/%zu",
+                                     q_reader.size, q_reader.max_queue_size, 
+                                     q_printer.size, q_printer.max_queue_size);
+            status_reader = 0;
+            status_analyzer = 0;
+            status_printer = 0;
+            status_logger = 0;
         }
     }
     // changing terminal mode back
@@ -141,9 +139,9 @@ int main() {
     // Cleanup
     close(fd);
     fclose(log_stream);
-    deinit_queue(&q[READER]);
-    deinit_queue(&q[ANALYZER]);
-    deinit_queue(&q[LOGGER]);
+    deinit_queue(&q_reader);
+    deinit_queue(&q_printer);
+    deinit_queue(&q_logger);
 
     return 0;
 }
@@ -158,10 +156,18 @@ void* reader(void* arg) {
     int rs;
     ssize_t data_size;
     char data_buffer[4096] = {0};
-    time_t t;
 
-    while (!end[READER]) {
-        status[READER] = 1ul;
+    size_t delay = 0;
+
+    for(;;) {
+        *status = 1;
+        delay++;
+        delay %= 5;
+        if (delay) {
+            // FIXME only for testing
+            usleep(100000);
+            continue;
+        }
 
         fd = open("/proc/stat", O_RDONLY);
         if (fd == -1) {
@@ -175,23 +181,20 @@ void* reader(void* arg) {
             pthread_exit(status);
         }
 
-        pthread_mutex_lock(&mtx[READER]);
+        pthread_mutex_lock(&mtx_reader);
 
         // enqueue data for analyzer
-        rs = enqueue(&q[READER], data_buffer, (size_t)data_size);
+        rs = enqueue(&q_reader, data_buffer, (size_t)data_size);
 
-        pthread_cond_signal(&cond_var[READER]);
-        pthread_mutex_unlock(&mtx[READER]);
+        pthread_cond_signal(&cond_var_reader);
+        pthread_mutex_unlock(&mtx_reader);
 
 
         if (!rs)
-            log_message(&log_queue, "[READER] - Read %zu bytes and added to Queue (queue[READER].size = %zu)", data_size, q[READER].size);
+            log_message(&log_queue, "[READER] - Read %zu bytes and added to Queue (queue[READER].size = %zu)", data_size, q_reader.size);
 
         close(fd);
-        // FIXME only for testing
-        usleep(1000000);
     }
-    pthread_exit(status);
 }
 
 
@@ -199,11 +202,11 @@ void* reader(void* arg) {
 
 
 static void* analyzer(void* arg) {
+    size_t* status = (size_t*)arg;
+
     struct timespec ts;
     struct timeval  tv;
     long timeout = 500l; // thread condition timeout in miliseconds
-
-    size_t* status = (size_t*)arg;
 
     int rs = 1;
     ssize_t data_size = 0;
@@ -217,26 +220,24 @@ static void* analyzer(void* arg) {
     struct cpu_time cpu_new_time[30] = {0};
     struct cpu_time cpu_old_time[30] = {0};
 
-    while (!end[ANALYZER]) {
-        status[ANALYZER] = 1ul;
+    for(;;) {
+        *status = 1;
 
-        pthread_mutex_lock(&mtx[READER]);
-
+        pthread_mutex_lock(&mtx_reader);
         // Wait for signal but with 1 sec timeout (just in case if reader hanged or ended)
         gettimeofday(&tv, NULL);
         ts.tv_nsec = (tv.tv_usec * 1000l) + timeout * 1000000; // 500 [ms]
         ts.tv_sec = tv.tv_sec + (ts.tv_nsec / 1000000000l);
         ts.tv_nsec %= 1000000000l;
-        pthread_cond_timedwait(&cond_var[READER], &mtx[READER], &ts);
-
+        pthread_cond_timedwait(&cond_var_reader, &mtx_reader, &ts);
         // dequeue data from reader
-        if (q[READER].size > 0) {
-            data_size = (ssize_t)q[READER].head->data_size;
-            rs = dequeue(&q[READER], data_buffer_raw);
+        if (q_reader.size > 0) {
+            data_size = (ssize_t)q_reader.head->data_size;
+            rs = dequeue(&q_reader, data_buffer_raw);
         } else {
             rs = 1;
         }
-        pthread_mutex_unlock(&mtx[READER]);
+        pthread_mutex_unlock(&mtx_reader);
 
         // analyze data
         if (!rs) {
@@ -244,7 +245,8 @@ static void* analyzer(void* arg) {
         } else {
             continue;
         }
-
+        // FIXME only for testing
+        usleep(1000000);
         // get number of cpus (cpus num is always too big by one)
         cpus_num = get_cpu_count(data_buffer_raw, data_size);
         if (cpus_num < 2)
@@ -261,21 +263,15 @@ static void* analyzer(void* arg) {
         memcpy(cpu_old_time, cpu_new_time, sizeof(struct cpu_time) * cpus_num);
         log_message(&log_queue, "[ANALYZER] - Data analyzed, defined cpu cores: %zu", cpus_num);
 
-        pthread_mutex_lock(&mtx[ANALYZER]);
-
+        pthread_mutex_lock(&mtx_printer);
         // enqueue data for printer
-        rs = enqueue(&q[ANALYZER], cpu_usage, (size_t)(cpus_num * sizeof(double)));
-
-        pthread_cond_signal(&cond_var[ANALYZER]);
-        pthread_mutex_unlock(&mtx[ANALYZER]);
+        rs = enqueue(&q_printer, cpu_usage, (size_t)(cpus_num * sizeof(double)));
+        pthread_cond_signal(&cond_var_printer);
+        pthread_mutex_unlock(&mtx_printer);
 
         if (!rs)
-            log_message(&log_queue, "[ANALYZER] - Added data to Printers Queue (queue[ANALYZER].size = %zu)", q[ANALYZER].size);
-
-        // FIXME only for testing
-        usleep(1000);
+            log_message(&log_queue, "[ANALYZER] - Added data to Printers Queue (queue[ANALYZER].size = %zu)", q_printer.size);
     }
-    pthread_exit(status);
 }
 
 
@@ -283,38 +279,33 @@ static void* analyzer(void* arg) {
 
 
 static void* printer(void* arg) {
+    size_t* status = (size_t*)arg;
+
     struct timespec ts;
     struct timeval  tv;
     long timeout = 500l; // thread condition timeout in miliseconds
-
-    size_t* status = (size_t*)arg;
 
     int rs = 1;
     ssize_t data_size = 0;
     size_t cpus_num = 0;
     double cpu_usage[30] = {0};
 
-    while (!end[PRINTER]) {
-        status[PRINTER] = 1ul;
+    for(;;) {
+        *status = 1;
 
-        pthread_mutex_lock(&mtx[ANALYZER]);
-
+        pthread_mutex_lock(&mtx_printer);
         // Wait for signal but with 500 ms timeout (just in case if reader hanged or ended)
         gettimeofday(&tv, NULL);
         ts.tv_nsec = (tv.tv_usec * 1000l) + timeout * 1000000; // 500 [ms]
         ts.tv_sec = tv.tv_sec + (ts.tv_nsec / 1000000000l);
         ts.tv_nsec %= 1000000000l;
-        pthread_cond_timedwait(&cond_var[ANALYZER], &mtx[ANALYZER], &ts);
-
+        pthread_cond_timedwait(&cond_var_printer, &mtx_printer, &ts);
         // dequeue data from analyzer
-        if (q[ANALYZER].size > 0) {
-            data_size = (ssize_t)q[ANALYZER].head->data_size;
-            rs = dequeue(&q[ANALYZER], cpu_usage);
-        } else {
-            rs = 1;
+        if (q_printer.size > 0) {
+            data_size = (ssize_t)q_printer.head->data_size;
+            rs = dequeue(&q_printer, cpu_usage);
         }
-
-        pthread_mutex_unlock(&mtx[ANALYZER]);
+        pthread_mutex_unlock(&mtx_printer);
 
         if (!rs) {
             log_message(&log_queue, "[PRINTER] - Dequeued %zu bytes from printers Queue", data_size);
@@ -334,7 +325,6 @@ static void* printer(void* arg) {
         // FIXME only for testing
         usleep(1000);
     }
-    pthread_exit(status);
 }
 
 
@@ -343,28 +333,21 @@ static void* printer(void* arg) {
 
 static void* logger(void* arg) {
     size_t* status = (size_t*)arg;
-    struct timespec ts;
-    struct timeval  tv;
-    long timeout = 500l; // thread condition timeout in miliseconds
 
-    int rs = 1;
-    ssize_t data_size = 0;
     char message[300] = {0};
 
-    while (!end[LOGGER]) {
-        status[LOGGER] = 1;
-        pthread_mutex_lock(&mtx[LOGGER]);
+    for(;;) {
+        *status = 1;
 
-        while (q[LOGGER].size > 0) {
-            data_size = (ssize_t)q[LOGGER].head->data_size;
-            rs = dequeue(&q[LOGGER], message);
+        pthread_mutex_lock(&mtx_logger);
+        while (q_logger.size > 0) {
+            dequeue(&q_logger, message);
             fprintf(log_stream, "%s", message);
         }
+        pthread_mutex_unlock(&mtx_logger);
 
-        pthread_mutex_unlock(&mtx[LOGGER]);
-        sleep(1);
+        usleep(1000000);
     }
-    pthread_exit(status);
 }
 
 
@@ -381,13 +364,13 @@ static void exit_handler(int sig) {
     }
 
     // Ending program (via inetterupt)
-    pthread_cancel(thr[READER]);
-    pthread_cancel(thr[ANALYZER]);
-    pthread_cancel(thr[PRINTER]);
-    pthread_cancel(thr[LOGGER]);
-    pthread_join(thr[READER], NULL);
-    pthread_join(thr[ANALYZER], NULL);
-    pthread_join(thr[PRINTER], NULL);
-    pthread_join(thr[LOGGER], NULL);
-    end[WATCHDOG] = 1;
+    pthread_cancel(thr_reader);
+    pthread_cancel(thr_analyzer);
+    pthread_cancel(thr_printer);
+    pthread_cancel(thr_logger);
+    pthread_join(thr_reader, NULL);
+    pthread_join(thr_analyzer, NULL);
+    pthread_join(thr_printer, NULL);
+    pthread_join(thr_logger, NULL);
+    end_program = 1;
 }
